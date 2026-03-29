@@ -1,9 +1,9 @@
 {
   "name": "notion-calendar",
   "productName": "Notion Calendar",
-  "description": "Notion Calendar desktop application",
+  "description": "Notion Calendar desktop wrapper with tray and notifications for Linux",
   "homepage": "https://github.com/dusansimic/notion-calendar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Dušan Simić",
     "email": "dusan.simic1810@gmail.com",
@@ -17,12 +17,13 @@
     "build:linux": "npm run prebuild && electron-builder --linux --config"
   },
   "devDependencies": {
-    "@electron-toolkit/tsconfig": "^1.0.1",
-    "@electron-toolkit/utils": "^3.0.0",
-    "@swc/core": "^1.4.1",
-    "electron": "^28.2.3",
-    "electron-builder": "^24.9.1",
-    "electron-vite": "^2.0.0"
+    "@electron-toolkit/tsconfig": "^2.0.0",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@swc/core": "^1.15.21",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^3.0.0",
+    "typescript": "^5.7.0"
   },
   "dependencies": {
     "electron-store": "^8.1.0"

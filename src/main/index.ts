@@ -1,4 +1,14 @@
-import { BrowserWindow, app, shell, session } from "electron";
+import {
+  BrowserWindow,
+  Tray,
+  Menu,
+  Notification,
+  app,
+  shell,
+  session,
+  ipcMain,
+  nativeImage,
+} from "electron";
 import * as path from "path";
 import { optimizer } from "@electron-toolkit/utils";
 import config from "./config";
@@ -6,27 +16,53 @@ import config from "./config";
 const host = "https://calendar.notion.so";
 const otherAllowedHosts = ["https://calendar-api.notion.so"];
 
-const startsWithAny = (haystack: string, needles: string[]) => {
-  return needles
-    .map((needle) => haystack.startsWith(needle))
-    .some((starts) => starts);
-};
+const CHROME_UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
-function createWindow() {
-  const mainWindow = new BrowserWindow({
-    width: config.get("lastWindowState.width"),
-    height: config.get("lastWindowState.height"),
+let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
+
+const startsWithAny = (haystack: string, needles: string[]): boolean =>
+  needles.some((needle) => haystack.startsWith(needle));
+
+function createWindow(): BrowserWindow {
+  const lastState = config.store.lastWindowState;
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
+    width: lastState.width,
+    height: lastState.height,
     show: false,
     autoHideMenuBar: true,
     icon: path.join(__dirname, "..", "..", "build", "icon.png"),
     title: "Notion Calendar",
+    webPreferences: {
+      preload: path.join(__dirname, "..", "preload", "index.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  };
+
+  if (lastState.x !== undefined && lastState.y !== undefined) {
+    windowOptions.x = lastState.x;
+    windowOptions.y = lastState.y;
+  }
+
+  const window = new BrowserWindow(windowOptions);
+
+  window.on("ready-to-show", () => {
+    window.show();
   });
 
-  mainWindow.on("ready-to-show", () => {
-    mainWindow.show();
+  window.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      window.hide();
+    }
   });
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  window.webContents.setWindowOpenHandler(({ url }) => {
     if (!startsWithAny(url, [host, ...otherAllowedHosts])) {
       shell.openExternal(url);
       return { action: "deny" };
@@ -34,27 +70,127 @@ function createWindow() {
     return { action: "allow" };
   });
 
-  mainWindow.loadURL(host, { userAgent: "Chrome" });
+  window.loadURL(host, { userAgent: CHROME_UA });
 
-  return mainWindow;
+  return window;
 }
 
-app.whenReady().then(() => {
-  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    details.requestHeaders["User-Agent"] = "Chrome";
-    callback({ cancel: false, requestHeaders: details.requestHeaders });
+function createTray(): Tray {
+  const iconPath = path.join(__dirname, "..", "..", "build", "icon.png");
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 24, height: 24 });
+  const appTray = new Tray(icon);
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: "Show / Hide",
+      click: () => {
+        if (mainWindow?.isVisible()) {
+          mainWindow.hide();
+        } else {
+          mainWindow?.show();
+          mainWindow?.focus();
+        }
+      },
+    },
+    { type: "separator" },
+    {
+      label: "Quit",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  appTray.setToolTip("Notion Calendar");
+  appTray.setContextMenu(contextMenu);
+
+  appTray.on("click", () => {
+    if (mainWindow?.isVisible()) {
+      mainWindow.hide();
+    } else {
+      mainWindow?.show();
+      mainWindow?.focus();
+    }
   });
 
-  app.on("browser-window-created", (_, window) => {
-    optimizer.watchWindowShortcuts(window);
+  return appTray;
+}
+
+function saveWindowState(): void {
+  if (!mainWindow) return;
+  const bounds = mainWindow.getNormalBounds();
+  config.set("lastWindowState.width", bounds.width);
+  config.set("lastWindowState.height", bounds.height);
+  config.set("lastWindowState.x", bounds.x);
+  config.set("lastWindowState.y", bounds.y);
+}
+
+function setupNotificationForwarding(): void {
+  ipcMain.on("show-notification", (_event, data: { title: string; body: string }) => {
+    const notif = new Notification({
+      title: data.title,
+      body: data.body,
+      icon: path.join(__dirname, "..", "..", "build", "icon.png"),
+    });
+
+    notif.on("click", () => {
+      mainWindow?.show();
+      mainWindow?.focus();
+    });
+
+    notif.show();
+  });
+}
+
+function setupPermissions(): void {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    if (permission === "notifications") {
+      callback(true);
+      return;
+    }
+    callback(false);
   });
 
-  const mainWindow = createWindow();
-  session.defaultSession.setUserAgent("Chrome");
-
-  app.on("before-quit", () => {
-    const { width, height } = mainWindow.getNormalBounds();
-    config.set("lastWindowState.width", width);
-    config.set("lastWindowState.height", height);
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    if (permission === "notifications") {
+      return true;
+    }
+    return false;
   });
-});
+}
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  app.whenReady().then(() => {
+    session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+      details.requestHeaders["User-Agent"] = CHROME_UA;
+      callback({ cancel: false, requestHeaders: details.requestHeaders });
+    });
+
+    app.on("browser-window-created", (_, window) => {
+      optimizer.watchWindowShortcuts(window);
+    });
+
+    setupPermissions();
+    setupNotificationForwarding();
+
+    session.defaultSession.setUserAgent(CHROME_UA);
+    mainWindow = createWindow();
+    tray = createTray();
+
+    app.on("before-quit", () => {
+      isQuitting = true;
+      saveWindowState();
+    });
+  });
+}

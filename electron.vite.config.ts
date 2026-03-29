@@ -4,4 +4,7 @@ export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin(), swcPlugin()],
   },
+  preload: {
+    plugins: [externalizeDepsPlugin()],
+  },
 });

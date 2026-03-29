@@ -1,4 +1,13 @@
-import { ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
+
+contextBridge.exposeInMainWorld("notionCalendar", {
+  showNotification: (title: string, body: string) => {
+    ipcRenderer.send("show-notification", {
+      title: String(title).slice(0, 256),
+      body: String(body).slice(0, 1024),
+    });
+  },
+});
 
 function overrideNotifications(): void {
   const NativeNotification = window.Notification;
@@ -10,10 +19,7 @@ function overrideNotifications(): void {
   ) {
     const instance = new NativeNotification(title, options);
 
-    ipcRenderer.send("show-notification", {
-      title,
-      body: options?.body ?? "",
-    });
+    (window as any).notionCalendar.showNotification(title, options?.body ?? "");
 
     return instance;
   } as unknown as typeof Notification;

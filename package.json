@@ -14,7 +14,7 @@
     "start": "electron-vite preview",
     "dev": "electron-vite dev -- --no-sandbox",
     "prebuild": "electron-vite build",
-    "build:linux": "npm run prebuild && electron-builder --linux --config"
+    "build:linux": "npm run prebuild && electron-builder --linux deb --config --publish never"
   },
   "devDependencies": {
     "@electron-toolkit/tsconfig": "^2.0.0",

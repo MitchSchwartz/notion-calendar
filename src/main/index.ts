@@ -40,7 +40,8 @@ function createWindow(): BrowserWindow {
       preload: path.join(__dirname, "..", "preload", "index.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      nodeIntegrationInSubFrames: false,
+      sandbox: true,
     },
   };
 
@@ -68,6 +69,13 @@ function createWindow(): BrowserWindow {
       return { action: "deny" };
     }
     return { action: "allow" };
+  });
+
+  window.webContents.on("will-navigate", (event, url) => {
+    if (!startsWithAny(url, [host, ...otherAllowedHosts])) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
   });
 
   window.loadURL(host, { userAgent: CHROME_UA });
@@ -127,10 +135,18 @@ function saveWindowState(): void {
 }
 
 function setupNotificationForwarding(): void {
-  ipcMain.on("show-notification", (_event, data: { title: string; body: string }) => {
+  ipcMain.on("show-notification", (event, data: unknown) => {
+    if (mainWindow && event.senderFrame?.url && !startsWithAny(event.senderFrame.url, [host, ...otherAllowedHosts])) {
+      return;
+    }
+
+    if (!data || typeof data !== "object") return;
+    const { title, body } = data as Record<string, unknown>;
+    if (typeof title !== "string" || typeof body !== "string") return;
+
     const notif = new Notification({
-      title: data.title,
-      body: data.body,
+      title: title.slice(0, 256),
+      body: body.slice(0, 1024),
       icon: path.join(__dirname, "..", "..", "build", "icon.png"),
     });
 

@@ -2,13 +2,13 @@ import {
   BrowserWindow,
   Tray,
   Menu,
-  Notification,
   app,
   shell,
   session,
   ipcMain,
   nativeImage,
 } from "electron";
+import { execFile } from "child_process";
 import * as path from "path";
 import { optimizer } from "@electron-toolkit/utils";
 import config from "./config";
@@ -30,13 +30,29 @@ const NOTIFICATION_PATCH_SCRIPT = `
 (function () {
   if (window.__notionCalendarNotificationPatched) return;
   window.__notionCalendarNotificationPatched = true;
+  function buildPayload(title, options) {
+    options = options || {};
+    var body = options.body != null ? String(options.body) : "";
+    var payload = { title: String(title), body: body };
+    if (options.data !== undefined) {
+      try {
+        payload.data = typeof options.data === "string" ? options.data : JSON.stringify(options.data);
+      } catch (e) {}
+    }
+    if (options.actions && options.actions.length) {
+      payload.actions = options.actions.map(function (a) {
+        return { action: a.action, title: a.title };
+      });
+    }
+    return payload;
+  }
   var Native = window.Notification;
   function ForwardingNotification(title, options) {
     options = options || {};
-    var body = options.body != null ? String(options.body) : "";
     if (window.notionCalendar && typeof window.notionCalendar.showNotification === "function") {
-      window.notionCalendar.showNotification(String(title), body);
+      window.notionCalendar.showNotification(buildPayload(title, options));
     }
+    var body = options.body != null ? String(options.body) : "";
     var fake = Object.create(Native.prototype);
     fake.title = String(title);
     fake.body = body;
@@ -62,10 +78,8 @@ const NOTIFICATION_PATCH_SCRIPT = `
     if (SWReg && SWReg.prototype && SWReg.prototype.showNotification) {
       var origShow = SWReg.prototype.showNotification;
       SWReg.prototype.showNotification = function (title, options) {
-        options = options || {};
-        var b = options.body != null ? String(options.body) : "";
         if (window.notionCalendar && typeof window.notionCalendar.showNotification === "function") {
-          window.notionCalendar.showNotification(String(title), b);
+          window.notionCalendar.showNotification(buildPayload(title, options || {}));
         }
         return origShow.apply(this, arguments);
       };
@@ -91,7 +105,9 @@ function setupAppMenu(): void {
         label: "Toggle Developer Tools",
         accelerator: "CmdOrCtrl+Shift+I",
         click: (_item, focusedWindow) => {
-          if (focusedWindow) focusedWindow.webContents.toggleDevTools();
+          if (focusedWindow instanceof BrowserWindow) {
+            focusedWindow.webContents.toggleDevTools();
+          }
         },
       },
       { type: "separator" },
@@ -268,26 +284,135 @@ function isTrustedNotificationSender(event: Electron.IpcMainEvent): boolean {
   }
 }
 
+const URL_HINT_KEYS = [
+  "url",
+  "href",
+  "link",
+  "joinUrl",
+  "meetingUrl",
+  "meetingURL",
+  "calendarEventUrl",
+  "eventUrl",
+  "conferenceUrl",
+  "hangoutLink",
+  "meetUrl",
+  "entryPoints",
+];
+
+function isHttpsUrlString(s: string): boolean {
+  return /^https:\/\//.test(s.trim());
+}
+
+function pickJoinButtonLabel(actions: Array<{ action: string; title: string }> | undefined): string {
+  if (!actions?.length) return "Join call";
+  const preferred = actions.find((a) => /join|call|meet|zoom|teams|video|link/i.test(a.title));
+  return (preferred ?? actions[0]).title.slice(0, 64);
+}
+
+function extractJoinUrlFromParsed(payload: {
+  body: string;
+  data?: string;
+  actions?: Array<{ action: string; title: string }>;
+}): string | undefined {
+  if (payload.data) {
+    try {
+      const d = JSON.parse(payload.data) as Record<string, unknown>;
+      const stack: unknown[] = [d];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== "object") continue;
+        const obj = cur as Record<string, unknown>;
+        for (const key of URL_HINT_KEYS) {
+          const v = obj[key];
+          if (typeof v === "string" && isHttpsUrlString(v)) return v.trim();
+          if (v && typeof v === "object") stack.push(v);
+        }
+        for (const v of Object.values(obj)) {
+          if (v && typeof v === "object") stack.push(v);
+          if (typeof v === "string" && isHttpsUrlString(v)) return v.trim();
+        }
+      }
+    } catch {
+      const m = payload.data.match(/https:\/\/[^\s"'<>]+/);
+      if (m) return m[0].replace(/[),.;]+$/u, "");
+    }
+  }
+  const bodyMatch = payload.body.match(/https:\/\/[^\s)\]]+/u);
+  if (bodyMatch) return bodyMatch[0].replace(/[),.;]+$/u, "");
+  return undefined;
+}
+
+function parseNotificationPayload(data: unknown): {
+  title: string;
+  body: string;
+  data?: string;
+  actions?: Array<{ action: string; title: string }>;
+} | null {
+  if (!data || typeof data !== "object") return null;
+  const o = data as Record<string, unknown>;
+  if (typeof o.title !== "string" || typeof o.body !== "string") return null;
+  const out: {
+    title: string;
+    body: string;
+    data?: string;
+    actions?: Array<{ action: string; title: string }>;
+  } = { title: o.title, body: o.body };
+  if (typeof o.data === "string") out.data = o.data;
+  if (Array.isArray(o.actions)) {
+    const actions: Array<{ action: string; title: string }> = [];
+    for (const item of o.actions) {
+      if (!item || typeof item !== "object") continue;
+      const a = item as Record<string, unknown>;
+      if (typeof a.action === "string" && typeof a.title === "string") {
+        actions.push({ action: a.action, title: a.title });
+      }
+    }
+    if (actions.length) out.actions = actions;
+  }
+  return out;
+}
+
 function dispatchNativeNotification(data: unknown): void {
-  if (!data || typeof data !== "object") return;
-  const { title, body } = data as Record<string, unknown>;
-  if (typeof title !== "string" || typeof body !== "string") return;
+  console.log("[NotionCalendar] notification payload:", JSON.stringify(data, null, 2));
 
-  if (!Notification.isSupported()) return;
+  const parsed = parseNotificationPayload(data);
+  if (!parsed) return;
 
-  const notif = new Notification({
-    title: title.slice(0, 256),
-    body: body.slice(0, 1024),
-    icon: getAppIconPath(),
-    urgency: "critical",
+  console.log("[NotionCalendar] join URL extracted:", extractJoinUrlFromParsed(parsed) ?? "(none)");
+
+  const joinUrl = extractJoinUrlFromParsed(parsed);
+  const buttonLabel = pickJoinButtonLabel(parsed.actions);
+  const title = parsed.title.slice(0, 256);
+  const body = parsed.body.slice(0, 8192);
+
+  const args: string[] = [
+    "--app-name=Notion Calendar",
+    `--icon=${getAppIconPath()}`,
+    "--urgency=critical",
+    "--expire-time=0",
+    "--wait",
+  ];
+
+  // `default` opens the calendar when the user clicks the notification body (often not shown as a button).
+  // When a meeting link exists, a single `join` action is the only visible button.
+  args.push("--action=default=Open Calendar");
+  if (joinUrl) {
+    args.push(`--action=join=${buttonLabel}`);
+  }
+
+  args.push("--", title, body);
+
+  const child = execFile("notify-send", args, { timeout: 900_000 }, (_error, stdout) => {
+    const action = stdout.trim();
+    if (action === "join" && joinUrl) {
+      void shell.openExternal(joinUrl);
+    } else if (action === "default") {
+      mainWindow?.show();
+      mainWindow?.focus();
+    }
   });
 
-  notif.on("click", () => {
-    mainWindow?.show();
-    mainWindow?.focus();
-  });
-
-  notif.show();
+  child.unref();
 }
 
 function registerServiceWorkerPreload(sess: Electron.Session): void {
@@ -390,6 +515,8 @@ if (!gotLock) {
     app.on("before-quit", () => {
       isQuitting = true;
       saveWindowState();
+      tray?.destroy();
+      tray = null;
     });
   });
 }

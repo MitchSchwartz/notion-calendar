@@ -26,6 +26,13 @@ let isQuitting = false;
 const startsWithAny = (haystack: string, needles: string[]): boolean =>
   needles.some((needle) => haystack.startsWith(needle));
 
+function getAppIconPath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, "build", "icon.png");
+  }
+  return path.join(__dirname, "..", "..", "build", "icon.png");
+}
+
 function createWindow(): BrowserWindow {
   const lastState = config.store.lastWindowState;
 
@@ -34,7 +41,7 @@ function createWindow(): BrowserWindow {
     height: lastState.height,
     show: false,
     autoHideMenuBar: true,
-    icon: path.join(__dirname, "..", "..", "build", "icon.png"),
+    icon: getAppIconPath(),
     title: "Notion Calendar",
     webPreferences: {
       preload: path.join(__dirname, "..", "preload", "index.js"),
@@ -84,7 +91,7 @@ function createWindow(): BrowserWindow {
 }
 
 function createTray(): Tray {
-  const iconPath = path.join(__dirname, "..", "..", "build", "icon.png");
+  const iconPath = getAppIconPath();
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 24, height: 24 });
   const appTray = new Tray(icon);
 
@@ -147,7 +154,7 @@ function setupNotificationForwarding(): void {
     const notif = new Notification({
       title: title.slice(0, 256),
       body: body.slice(0, 1024),
-      icon: path.join(__dirname, "..", "..", "build", "icon.png"),
+      icon: getAppIconPath(),
     });
 
     notif.on("click", () => {

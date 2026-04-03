@@ -37,11 +37,13 @@ These are **defense-in-depth** measures; they do not replace a formal audit and 
 | Area | Implementation |
 |------|------------|
 | Renderer | `contextIsolation: true`, `nodeIntegration: false`, `nodeIntegrationInSubFrames: false`, `sandbox: true` |
-| Navigation | In-window navigation is limited to the Notion Calendar app and its API host; other URLs are opened in the **system default browser** instead of staying inside the app window |
-| New windows | Same host allowlist as navigation; external targets are not kept as captive Electron windows |
-| IPC | Renderer IPC checks the sender URL against the Notion hosts; service-worker IPC checks the worker scope. Payloads are validated and title/body lengths are capped before `notify-send` runs |
+| Navigation | In-window navigation is limited to allowed **hostnames** (`calendar.notion.so`, `calendar-api.notion.so`), matched with `URL` / hostname checks (not raw string prefixes, so lookalike domains cannot spoof the list). Other URLs open in the **system default browser** |
+| New windows | Same hostname allowlist as navigation; external targets are not kept as captive Electron windows |
+| IPC | Renderer notification IPC requires the sender frame URL to use an allowed hostname; **`about:blank` / empty senders are rejected**. Service-worker IPC checks the worker **scope** the same way. Payloads are validated and title/body lengths are capped before `notify-send` runs |
 | Permissions | Session permission handlers only grant **notifications**; other permission requests are denied |
 | Native notify | `notify-send` is invoked with `execFile` (no shell), with bounded arguments |
+
+**Repository hygiene:** `.env` files, `*.pem` / `*.key`, and similar patterns are in [`.gitignore`](.gitignore) to reduce the risk of committing secrets or keys by mistake.
 
 - **Email / password sign-in** — Signing in with **email and password in the main calendar page** works in typical use.
 

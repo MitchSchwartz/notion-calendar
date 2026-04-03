@@ -14,7 +14,19 @@ import { optimizer } from "@electron-toolkit/utils";
 import config from "./config";
 
 const host = "https://calendar.notion.so";
-const otherAllowedHosts = ["https://calendar-api.notion.so"];
+
+const ALLOWED_HOSTNAMES = new Set([
+  "calendar.notion.so",
+  "calendar-api.notion.so",
+]);
+
+function isAllowedUrl(url: string): boolean {
+  try {
+    return ALLOWED_HOSTNAMES.has(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
 
 const CHROME_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
@@ -22,9 +34,6 @@ const CHROME_UA =
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
-
-const startsWithAny = (haystack: string, needles: string[]): boolean =>
-  needles.some((needle) => haystack.startsWith(needle));
 
 const NOTIFICATION_PATCH_SCRIPT = `
 (function () {
@@ -192,7 +201,7 @@ function createWindow(): BrowserWindow {
   });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (!startsWithAny(url, [host, ...otherAllowedHosts])) {
+    if (!isAllowedUrl(url)) {
       shell.openExternal(url);
       return { action: "deny" };
     }
@@ -200,7 +209,7 @@ function createWindow(): BrowserWindow {
   });
 
   window.webContents.on("will-navigate", (event, url) => {
-    if (!startsWithAny(url, [host, ...otherAllowedHosts])) {
+    if (!isAllowedUrl(url)) {
       event.preventDefault();
       shell.openExternal(url);
     }
@@ -277,8 +286,8 @@ function isTrustedNotificationSender(event: Electron.IpcMainEvent): boolean {
   if (!sender || sender.isDestroyed()) return false;
   try {
     const url = sender.getURL();
-    if (!url || url === "about:blank") return true;
-    return startsWithAny(url, [host, ...otherAllowedHosts]);
+    if (!url || url === "about:blank") return false;
+    return isAllowedUrl(url);
   } catch {
     return false;
   }
@@ -425,16 +434,16 @@ function registerServiceWorkerPreload(sess: Electron.Session): void {
 
 function setupServiceWorkerNotificationBridge(sess: Electron.Session): void {
   const attachWorker = (worker: Electron.ServiceWorkerMain): void => {
-    if (!worker.scope.startsWith(host)) return;
+    if (!isAllowedUrl(worker.scope)) return;
     worker.ipc.removeAllListeners("show-notification");
     worker.ipc.on("show-notification", (event, data: unknown) => {
-      if (!event.serviceWorker.scope.startsWith(host)) return;
+      if (!isAllowedUrl(event.serviceWorker.scope)) return;
       dispatchNativeNotification(data);
     });
   };
 
   sess.serviceWorkers.on("registration-completed", async (_event, details) => {
-    if (!details.scope.startsWith(host)) return;
+    if (!isAllowedUrl(details.scope)) return;
     try {
       const worker = await sess.serviceWorkers.startWorkerForScope(details.scope);
       if (worker) attachWorker(worker);

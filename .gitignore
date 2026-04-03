@@ -1,3 +1,12 @@
 /node_modules/
 /out/
 /dist/
+
+.env
+.env.*
+.env.local
+*.pem
+*.key
+*.p12
+.DS_Store
+Thumbs.db

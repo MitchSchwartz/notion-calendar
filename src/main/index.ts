@@ -192,8 +192,7 @@ function createWindow(): BrowserWindow {
       nodeIntegration: false,
       nodeIntegrationInSubFrames: false,
       sandbox: true,
-      // In dev, avoid throttling the renderer when the window loses focus (smoother tabbing / DevTools).
-      backgroundThrottling: app.isPackaged,
+      backgroundThrottling: false,
     },
   };
 
@@ -237,11 +236,11 @@ function createWindow(): BrowserWindow {
     }
   });
 
-  window.webContents.once("dom-ready", () => {
+  window.webContents.on("dom-ready", () => {
     window.webContents.executeJavaScript(NOTIFICATION_PATCH_SCRIPT, false).catch(() => {});
   });
 
-  window.webContents.once("did-finish-load", () => {
+  window.webContents.on("did-finish-load", () => {
     void window.webContents.insertCSS(WRAPPER_INSET_CSS, { cssOrigin: "user" });
   });
 

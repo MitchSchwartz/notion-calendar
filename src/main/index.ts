@@ -166,7 +166,18 @@ function setupAppMenu(): void {
       : [
           {
             label: "File",
-            submenu: [{ role: "quit" }],
+            submenu: [
+              {
+                label: "Start minimized to tray",
+                type: "checkbox",
+                checked: config.get("startMinimizedToTray") === true,
+                click: (menuItem) => {
+                  config.set("startMinimizedToTray", menuItem.checked);
+                },
+              },
+              { type: "separator" },
+              { role: "quit" },
+            ],
           },
           viewMenu,
         ];
@@ -203,15 +214,25 @@ function createWindow(): BrowserWindow {
 
   const window = new BrowserWindow(windowOptions);
 
-  window.webContents.on("before-input-event", (_event, input) => {
+  const startInTray =
+    config.get("startMinimizedToTray") === true || app.commandLine.hasSwitch("start-in-tray");
+
+  window.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
+    if (input.control && !input.meta && input.key.toLowerCase() === "w") {
+      event.preventDefault();
+      window.hide();
+      return;
+    }
     if (input.key === "F12" || (input.control && input.shift && input.key.toLowerCase() === "i")) {
       window.webContents.toggleDevTools();
     }
   });
 
   window.on("ready-to-show", () => {
-    window.show();
+    if (!startInTray) {
+      window.show();
+    }
   });
 
   window.on("close", (event) => {

@@ -14,7 +14,8 @@ Upstream is a minimal Linux-friendly wrapper; this fork adds updated dependencie
 
 ## Features in this fork
 
-- **Tray** — Closing the window **minimizes to the system tray** instead of quitting. Tray menu: show/hide, quit, developer tools. **Single-instance**: launching again focuses the existing window.
+- **Tray** — Closing the window (**X** button or **Ctrl+W**) **hides to the system tray** instead of quitting. Tray menu: show/hide, quit, developer tools. **Single-instance**: launching again focuses the existing window.
+- **Start minimized to tray** — In **File → Start minimized to tray**, enable the option to persist across launches, or start once with **`notion-calendar --start-in-tray`** (main window stays hidden until you open it from the tray). For **session autostart**, put flags before any desktop field codes, e.g. `Exec=notion-calendar --start-in-tray %U` in a **`~/.config/autostart/`** `.desktop` file (or your desktop’s login-applications UI).
 - **Native notifications (Linux)** — Calendar alerts are **not** shown with Electron’s built-in `Notification` API. The main process runs **`notify-send`** (from **libnotify**) so notifications match your desktop environment (e.g. KDE), including **critical** urgency and **action buttons** where supported.
   - **Click the notification body** → focuses the app (freedesktop **`default`** action).
   - **Join / meeting link** → when a URL is detected in the payload, a single **Join**-style action opens that link in the default browser.
@@ -79,4 +80,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-*Last updated: 2026-04-03 (Europe/Vienna)*
+*Last updated: 2026-04-14 (America/Toronto)*

@@ -7,9 +7,14 @@ export type StoreType = {
     x: number | undefined;
     y: number | undefined;
   };
+  /** When true, the main window stays hidden on launch (tray only) until shown. */
+  startMinimizedToTray: boolean;
 };
 
 const store = new Store<StoreType>({
+  defaults: {
+    startMinimizedToTray: false,
+  },
   migrations: {
     "0.2.0": (store) => {
       store.set("lastWindowState.width", 900);
@@ -25,6 +30,10 @@ const store = new Store<StoreType>({
         x: { type: "number" },
         y: { type: "number" },
       },
+    },
+    startMinimizedToTray: {
+      type: "boolean",
+      default: false,
     },
   },
 });

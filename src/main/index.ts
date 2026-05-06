@@ -11,32 +11,213 @@ import {
 import { execFile } from "child_process";
 import * as path from "path";
 import { optimizer } from "@electron-toolkit/utils";
+// Side effects: userData path + name must run before Store ctor (see config.ts).
 import config from "./config";
 
-// Linux title-bar / taskbar icon: Electron 38+ Wayland uses an XDG app id that must
-// match the installed .desktop file. See package.json `desktopName` (Electron #48391,
-// #49988). setName is an extra alignment with StartupWMClass for older paths.
-if (process.platform === "linux") {
-  app.setName("notion-calendar");
-}
+// Before `app.ready`. Reduces automation-oriented signals some sites combine with UA heuristics.
+app.commandLine.appendSwitch("disable-blink-features", "AutomationControlled");
 
 const host = "https://calendar.notion.so";
 
 const ALLOWED_HOSTNAMES = new Set([
   "calendar.notion.so",
   "calendar-api.notion.so",
+  // Email/password (and other first-party) sign-in often leaves calendar.* for www / apex Notion.
+  "notion.so",
+  "www.notion.so",
+  // Marketing download funnel; allow in-window so we do not spawn Chrome (noisy + confusing).
+  "www.notion.com",
+  // Referenced in calendar CSP (connect-src); the SPA may top-level navigate here after auth / workspace flows.
+  "app.notion.com",
+  "exp.notion.so",
+  "calendar-te.notion.so",
 ]);
 
 function isAllowedUrl(url: string): boolean {
   try {
-    return ALLOWED_HOSTNAMES.has(new URL(url).hostname);
+    const parsed = new URL(url);
+    // Only gate http(s). Other schemes (e.g. blob:, about:) have no hostname here; blocking them breaks loads.
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return true;
+    }
+    return ALLOWED_HOSTNAMES.has(parsed.hostname);
+  } catch {
+    return true;
+  }
+}
+
+/** Client-side redirect from the calendar SPA to "get the official desktop app" marketing. Keep users on the web app. */
+function isCalendarDesktopMarketingUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.hostname !== "www.notion.com") return false;
+    const p = u.pathname.toLowerCase();
+    return p.startsWith("/product/calendar") || p.startsWith("/product/notion-calendar");
   } catch {
     return false;
   }
 }
 
+/** After this many blocked marketing navigations, stop calling `loadURL` (avoids thrash). Reset via View → Open Notion Calendar (home). */
+const MAX_MARKETING_REDIRECT_RELOADS = 5;
+const marketingRedirectReloadsByWebContentsId = new Map<number, number>();
+
+// Never reset the marketing-redirect counter on `did-navigate` to calendar.notion.so: the SPA
+// loads there first, then client-navigates to www.notion.com/product/calendar/… — resetting
+// on every calendar navigation undoes the cap and causes an infinite reload loop.
+
+function marketingRedirectReloadCount(contents: Electron.WebContents): number {
+  return marketingRedirectReloadsByWebContentsId.get(contents.id) ?? 0;
+}
+
+function bumpMarketingRedirectReloadCount(contents: Electron.WebContents): number {
+  const next = marketingRedirectReloadCount(contents) + 1;
+  marketingRedirectReloadsByWebContentsId.set(contents.id, next);
+  return next;
+}
+
+function resetMarketingRedirectReloadCount(contents: Electron.WebContents): void {
+  marketingRedirectReloadsByWebContentsId.delete(contents.id);
+}
+
+function reloadCalendarHome(contents: Electron.WebContents): void {
+  void contents.loadURL(host, { userAgent: CHROME_UA });
+}
+
+function attachWebNavigationGuards(contents: Electron.WebContents): void {
+  contents.setWindowOpenHandler(({ url }) => {
+    if (!isAllowedUrl(url)) {
+      shell.openExternal(url);
+      return { action: "deny" };
+    }
+    return { action: "allow" };
+  });
+
+  contents.on("will-navigate", (event, url) => {
+    if (isCalendarDesktopMarketingUrl(url)) {
+      event.preventDefault();
+      const n = bumpMarketingRedirectReloadCount(contents);
+      if (n > MAX_MARKETING_REDIRECT_RELOADS) {
+        console.warn(
+          "[NotionCalendar] stayed on marketing page after",
+          MAX_MARKETING_REDIRECT_RELOADS,
+          "reload attempts; use View → Open Notion Calendar (home) or sign in on the web.",
+        );
+        return;
+      }
+      reloadCalendarHome(contents);
+      return;
+    }
+    if (!isAllowedUrl(url)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
+  contents.on("will-redirect", (event, url) => {
+    if (isCalendarDesktopMarketingUrl(url)) {
+      event.preventDefault();
+      const n = bumpMarketingRedirectReloadCount(contents);
+      if (n > MAX_MARKETING_REDIRECT_RELOADS) {
+        console.warn(
+          "[NotionCalendar] redirect to marketing page exceeded retry limit; open DevTools → Network if this persists.",
+        );
+        return;
+      }
+      reloadCalendarHome(contents);
+      return;
+    }
+    if (!isAllowedUrl(url)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+}
+
+// Notion Calendar (post ~2026-05-05) can redirect unofficial wrappers to the download page.
+// Spoof macOS in both the UA string and Client Hints — Statsig / feature gates often use
+// Sec-CH-UA-Platform ("Linux") even when User-Agent is overridden.
 const CHROME_UA =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+
+/** Strip Chromium's default Linux hints and send macOS-aligned low-entropy hints. */
+function applyMacClientHints(headers: Record<string, string | string[] | undefined>): void {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase().startsWith("sec-ch-ua")) {
+      delete headers[key];
+    }
+  }
+  headers["Sec-CH-UA"] =
+    '"Chromium";v="135", "Google Chrome";v="135", "Not;A=Brand";v="99"';
+  headers["Sec-CH-UA-Mobile"] = "?0";
+  headers["Sec-CH-UA-Platform"] = '"macOS"';
+}
+
+/**
+ * Notion HTML documents ship strict CSP (no `unsafe-inline` for scripts, tight `connect-src`).
+ * (1) Our preload injects a small inline main-world script on calendar — CSP must be stripped there.
+ * (2) On www/app Notion, the same CSP blocks third-party calls their own bundle still makes (e.g.
+ * `api.ipify.org`), which can surface as failed fetches and odd post-login behavior in Electron.
+ * We strip CSP only for **HTML** responses on first-party Notion hosts we navigate to in-app.
+ */
+const CSP_STRIP_HTML_HOSTS = new Set([
+  "calendar.notion.so",
+  "www.notion.so",
+  "notion.so",
+  "app.notion.com",
+]);
+
+function urlHostReceivesHtmlCspStrip(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && CSP_STRIP_HTML_HOSTS.has(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function setupNotionFirstPartyHtmlCspBypass(sess: Electron.Session): void {
+  sess.webRequest.onHeadersReceived((details, callback) => {
+    try {
+      if (!urlHostReceivesHtmlCspStrip(details.url)) {
+        callback({});
+        return;
+      }
+      const headers = details.responseHeaders;
+      if (!headers) {
+        callback({});
+        return;
+      }
+      let contentType = "";
+      let hasCsp = false;
+      for (const key of Object.keys(headers)) {
+        const lower = key.toLowerCase();
+        if (lower === "content-type") {
+          const v = headers[key];
+          contentType = (Array.isArray(v) ? v[0] : v) ?? "";
+        }
+        if (lower === "content-security-policy" || lower === "content-security-policy-report-only") {
+          hasCsp = true;
+        }
+      }
+      if (!contentType.toLowerCase().includes("text/html") || !hasCsp) {
+        callback({});
+        return;
+      }
+      const out: Record<string, string | string[]> = {};
+      for (const [key, value] of Object.entries(headers)) {
+        const lower = key.toLowerCase();
+        if (lower === "content-security-policy" || lower === "content-security-policy-report-only") {
+          continue;
+        }
+        out[key] = value;
+      }
+      callback({ statusLine: details.statusLine, responseHeaders: out });
+    } catch {
+      callback({});
+    }
+  });
+}
 
 /** Light inset so the web app is not flush against the window frame (KDE/Wayland). */
 const WRAPPER_INSET_CSS = `
@@ -127,6 +308,18 @@ function setupAppMenu(): void {
     label: "View",
     submenu: [
       { role: "reload" },
+      {
+        label: "Open Notion Calendar (home)",
+        accelerator: "CmdOrCtrl+Shift+H",
+        click: (_item, focusedWindow) => {
+          const win =
+            focusedWindow instanceof BrowserWindow ? focusedWindow : mainWindow ?? undefined;
+          if (win) {
+            resetMarketingRedirectReloadCount(win.webContents);
+            void win.loadURL(host, { userAgent: CHROME_UA });
+          }
+        },
+      },
       { type: "separator" },
       {
         label: "Toggle Developer Tools",
@@ -239,21 +432,6 @@ function createWindow(): BrowserWindow {
     if (!isQuitting) {
       event.preventDefault();
       window.hide();
-    }
-  });
-
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    if (!isAllowedUrl(url)) {
-      shell.openExternal(url);
-      return { action: "deny" };
-    }
-    return { action: "allow" };
-  });
-
-  window.webContents.on("will-navigate", (event, url) => {
-    if (!isAllowedUrl(url)) {
-      event.preventDefault();
-      shell.openExternal(url);
     }
   });
 
@@ -481,8 +659,9 @@ function notifySendMinimal(title: string, body: string): void {
   const args = [
     "--app-name=Notion Calendar",
     `--icon=${getAppIconPath()}`,
-    "--urgency=critical",
-    "--expire-time=0",
+    "--urgency=normal",
+    "--expire-time=1200000",
+    "--hint=string:desktop-entry:notion-calendar",
     "--",
     title,
     body,
@@ -511,8 +690,9 @@ function dispatchNativeNotification(data: unknown): void {
   const args: string[] = [
     "--app-name=Notion Calendar",
     `--icon=${getAppIconPath()}`,
-    "--urgency=critical",
-    "--expire-time=0",
+    "--urgency=normal",
+    "--expire-time=1200000",
+    "--hint=string:desktop-entry:notion-calendar",
     "--wait",
   ];
 
@@ -635,14 +815,25 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     registerServiceWorkerPreload(session.defaultSession);
+    setupNotionFirstPartyHtmlCspBypass(session.defaultSession);
 
     session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-      details.requestHeaders["User-Agent"] = CHROME_UA;
-      callback({ cancel: false, requestHeaders: details.requestHeaders });
+      const headers = { ...details.requestHeaders } as Record<string, string | string[] | undefined>;
+      headers["User-Agent"] = CHROME_UA;
+      applyMacClientHints(headers);
+      if (
+        details.resourceType === "mainFrame" &&
+        details.url.startsWith("https://calendar.notion.so/")
+      ) {
+        headers["Cache-Control"] = "no-cache";
+        headers["Pragma"] = "no-cache";
+      }
+      callback({ cancel: false, requestHeaders: headers as Record<string, string | string[]> });
     });
 
     app.on("browser-window-created", (_, window) => {
       optimizer.watchWindowShortcuts(window);
+      attachWebNavigationGuards(window.webContents);
     });
 
     setupPermissions();

@@ -21,6 +21,7 @@ linux:
   desktop:
     entry:
       StartupWMClass: notion-calendar
+      X-GNOME-UsesNotifications: "true"
   target:
     - deb
     - rpm

@@ -4,7 +4,7 @@
   "desktopName": "notion-calendar.desktop",
   "description": "Electron wrapper for Notion Calendar on Linux: tray (minimize on close), native notifications via notify-send/libnotify with join link actions, window state, and KDE-friendly packaging.",
   "homepage": "https://github.com/opsmachine/notion-calendar",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "author": {
     "name": "Dušan Simić",
     "email": "dusan.simic1810@gmail.com",
@@ -12,9 +12,10 @@
   },
   "main": "./out/main/index.js",
   "scripts": {
-    "start": "electron-vite preview",
-    "dev": "electron-vite dev -- --no-sandbox",
+    "start": "env -u ELECTRON_RUN_AS_NODE electron-vite preview",
+    "dev": "env -u ELECTRON_RUN_AS_NODE electron-vite dev -- --no-sandbox",
     "prebuild": "electron-vite build",
+    "run:electron": "env -u ELECTRON_RUN_AS_NODE ./node_modules/electron/dist/electron . --no-sandbox",
     "build:linux": "npm run prebuild && electron-builder --linux deb --config --publish never"
   },
   "devDependencies": {
